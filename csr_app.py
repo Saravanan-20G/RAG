@@ -1,14 +1,12 @@
 import streamlit as st
 
-
-from langchain_community.document_loaders import PyPDFLoader
+from langchain.document_loaders import PyPDFLoader
 from langchain_core.documents import Document
 
 import pytesseract
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 from PIL import Image
 import fitz
-
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
@@ -80,13 +78,21 @@ embeddings=HuggingFaceEmbeddings()
 texts=[doc.page_content for doc in chunks]
 
 db=FAISS.from_texts(texts,embeddings)
+query="what is Red Flag Rule"
 
-user_input=''
-if user_input:
-    docs=db.similarity_search(input)
-    answer = docs[0].page_content
+docs=db.similarity_search(query)
 
-    st.write( answer)
+for doc in docs:
+    print(doc)
+
+retriever=db.as_retriever()
+
+query='CREATING A PROFILE IN CCS' 
+
+docs=retriever.invoke(query)
+
+for doc in docs:
+    print(doc.page_content)
 
 
       
