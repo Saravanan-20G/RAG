@@ -1,98 +1,85 @@
 import streamlit as st
-
-from langchain.document_loaders import PyPDFLoader
-from langchain_core.documents import Document
-
-import pytesseract
-pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-from PIL import Image
 import fitz
+from PIL import Image
+import pytesseract
 
+from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-
-from sentence_transformers import SentenceTransformer
-
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
 
-file_path=r'D:\Saran\RAG\CSR MODULES (1).pdf'
+# ---------------- UI ----------------
+st.title("📄 PDF Chatbot (RAG + OCR)")
 
-loader=PyPDFLoader(file_path)
+uploaded_file = st.file_uploader("Upload PDF", type="pdf")
 
-documents=loader.load()
-
-
-
-doc = fitz.open("CSR MODULES (1).pdf")
-
-documents = []
-
-for i, page in enumerate(doc):
-
-    # 1️⃣ Extract normal text
-    text = page.get_text()
-
-    # 2️⃣ Convert full page to image (for OCR)
-    pix = page.get_pixmap(matrix=fitz.Matrix(3, 3))
-    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-
-    # 3️⃣ OCR on image
-    ocr_text = pytesseract.image_to_string(img)
-
-    # 4️⃣ Combine both
-    full_text = text + "\n" + ocr_text
-
-    documents.append({
-        "page": i + 1,
-        "text": full_text
-    })
-
-
+# ---------------- CLEAN FUNCTION ----------------
 def clean_text(text):
-    text=text.replace("/n"," ")
-    text=" ".join(text.split())
+    text = text.replace("\n", " ")
+    text = " ".join(text.split())
     return text
 
-cleaned_docs = [
-    Document(
-        page_content=clean_text(doc["text"]),
-        metadata=doc.get("metadata", {})
+
+# ---------------- PROCESS PDF ----------------
+@st.cache_resource
+def process_pdf(file_bytes):
+
+    doc = fitz.open(stream=file_bytes, filetype="pdf")
+    documents = []
+
+    for i, page in enumerate(doc):
+
+        # Extract normal text
+        text = page.get_text()
+
+        # Convert page to image
+        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+
+        # OCR
+        try:
+            ocr_text = pytesseract.image_to_string(img)
+        except:
+            ocr_text = ""
+
+        # Avoid duplication
+        full_text = text if len(text.strip()) > 50 else ocr_text
+
+        documents.append(
+            Document(
+                page_content=clean_text(full_text),
+                metadata={"page": i + 1}
+            )
+        )
+
+    # Split
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000,
+        chunk_overlap=100
     )
-    for doc in documents
-]
 
-text_splitter=RecursiveCharacterTextSplitter(
-    separators=["\n\n", "\n", ".", " "],
-    chunk_size=2000,
-    chunk_overlap=50
-)
-chunks = text_splitter.split_documents(cleaned_docs)
+    chunks = splitter.split_documents(documents)
 
-model=SentenceTransformer("all-MiniLM-L6-v2")
+    # Embedding
+    embeddings = HuggingFaceEmbeddings()
 
-texts=[doc.page_content for doc in chunks]
+    db = FAISS.from_documents(chunks, embeddings)
 
-embeddings=model.encode(texts)
-
-embeddings=HuggingFaceEmbeddings()
-texts=[doc.page_content for doc in chunks]
-
-db=FAISS.from_texts(texts,embeddings)
-query="what is Red Flag Rule"
-
-docs=db.similarity_search(query)
-
-for doc in docs:
-    print(doc)
-
-retriever=db.as_retriever()
-
-query='CREATING A PROFILE IN CCS' 
-
-docs=retriever.invoke(query)
-
-for doc in docs:
-    print(doc.page_content)
+    return db
 
 
-      
+# ---------------- MAIN FLOW ----------------
+if uploaded_file is not None:
+
+    db = process_pdf(uploaded_file.read())
+
+    query = st.text_input("Ask a question from the PDF:")
+
+    if query:
+        retriever = db.as_retriever(search_kwargs={"k": 3})
+        docs = retriever.invoke(query)
+
+        st.subheader("📌 Answer (retrieved content):")
+        for doc in docs:
+            st.write(doc.page_content)
+            st.caption(f"Page: {doc.metadata.get('page')}")
